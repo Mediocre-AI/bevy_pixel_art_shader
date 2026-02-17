@@ -17,7 +17,7 @@ use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 use bevy_edge_detection_outline::{EdgeDetection, EdgeDetectionPlugin};
-use bevy_egui::{EguiContexts, EguiPlugin, egui};
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use bevy_pixel_art_shader::{
     HoldoutExtension, HoldoutMaterial, PixelArtExtension, PixelArtMaterial, PixelArtShaderParams,
     PixelArtShaderPlugin, default_pixel_art_palette,
@@ -44,7 +44,8 @@ fn main() {
         .add_plugins(EdgeDetectionPlugin::default())
         .add_plugins(EguiPlugin::default())
         .add_systems(Startup, setup)
-        .add_systems(Update, (rotate_models, swap_glb_materials, debug_ui))
+        .add_systems(Update, (rotate_models, swap_glb_materials))
+        .add_systems(EguiPrimaryContextPass, debug_ui)
         .run();
 }
 
@@ -355,9 +356,12 @@ fn debug_ui(
     mut pixel_materials: ResMut<Assets<PixelArtMaterial>>,
     mut edge_q: Query<&mut EdgeDetection, With<PixelArtCamera>>,
 ) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
     egui::Window::new("Pixel Art Settings")
         .default_width(300.0)
-        .show(contexts.ctx_mut().unwrap(), |ui| {
+        .show(ctx, |ui| {
             // ── PixelArt Material params ──
             ui.collapsing("Pixel Art Shader", |ui| {
                 // Collect handles first to avoid borrow conflict
