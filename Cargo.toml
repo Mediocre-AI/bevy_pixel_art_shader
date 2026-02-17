@@ -1,0 +1,15 @@
+[package]
+name = "bevy_pixel_art_shader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.18", features = ["3d"] }
+bevy_edge_detection_outline = { path = "../bevy_edge_detection_outline" }
+
+[dev-dependencies]
+bevy_egui = "0.39"
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"
