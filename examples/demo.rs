@@ -15,7 +15,7 @@ use bevy::image::ImageSampler;
 use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
-use bevy_edge_detection_outline::{EdgeDetection, EdgeDetectionPlugin};
+use bevy_edge_detection_outline::{EdgeDetection, EdgeDetectionPlugin, EdgeOperator};
 use bevy_egui::{
     EguiContext, EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass,
     PrimaryEguiContext, egui,
@@ -435,7 +435,7 @@ fn debug_ui(
                     ui.separator();
                     changed |= ui
                         .add(
-                            egui::Slider::new(&mut palette_count, 0..=16).text("Palette Colors"),
+                            egui::Slider::new(&mut palette_count, 0..=64).text("Palette Colors"),
                         )
                         .changed();
                     changed |= ui
@@ -475,6 +475,17 @@ fn debug_ui(
 
             ui.collapsing("Edge Detection Params", |ui| {
                 if let Ok(mut ed) = edge_q.single_mut() {
+                    ui.horizontal(|ui| {
+                        ui.label("Operator:");
+                        let is_sobel = ed.operator == EdgeOperator::Sobel;
+                        if ui.selectable_label(is_sobel, "Sobel").clicked() {
+                            ed.operator = EdgeOperator::Sobel;
+                        }
+                        if ui.selectable_label(!is_sobel, "Roberts Cross").clicked() {
+                            ed.operator = EdgeOperator::RobertsCross;
+                        }
+                    });
+                    ui.separator();
                     ui.add(
                         egui::Slider::new(&mut ed.depth_threshold, 0.0..=5.0)
                             .text("Depth Threshold"),

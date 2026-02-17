@@ -3,7 +3,7 @@
 //! Integrates with Bevy's full PBR lighting pipeline, then post-processes:
 //!   1. Toon quantize the PBR lighting result (hard band edges)
 //!   2. CIELAB palette quantization
-//!   3. World-space Bayer dithering (only at band boundaries)
+//!   3. Screen-space Bayer dithering (pixel-grid aligned)
 //!
 //! debug_stage controls which stages are applied:
 //!   0 = full pipeline, 1 = PBR only, 2 = +toon, 3 = +palette, 4 = +dither
@@ -39,7 +39,7 @@ struct PixelArtParams {
     palette_strength: f32,
     dither_strength: f32,
     debug_stage: u32,              // 0=full, 1=PBR, 2=+toon, 3=+palette, 4=+dither
-    palette_colors: array<vec4<f32>, 32>,
+    palette_colors: array<vec4<f32>, 64>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100)
@@ -216,14 +216,12 @@ fn fragment(
 
         // Stage 3: +Palette (no dither) — skip dithering
         if (pixel_art.debug_stage != 3u && pixel_art.dither_strength > 0.0) {
-            let boundary_mask = smoothstep(0.1, 0.35, pm.blend);
-            let effective_dither = boundary_mask * pixel_art.dither_strength;
-
-            if (effective_dither > 0.0) {
-                let threshold = bayer4x4(floor(in.world_position.xz * pixel_art.dither_density));
-                if (pm.blend * effective_dither > threshold) {
-                    quantized = pm.second_rgb;
-                }
+            // Screen-space Bayer dithering: aligns with pixel grid, no surface distortion.
+            // blend ∈ [0, 0.5]: 0 = exact palette match, 0.5 = equidistant between two colors.
+            // At blend=0.5, 50% of Bayer cells pick the second color → ordered dithering.
+            let threshold = bayer4x4(floor(in.position.xy * pixel_art.dither_density));
+            if (threshold < pm.blend * pixel_art.dither_strength) {
+                quantized = pm.second_rgb;
             }
         }
 
