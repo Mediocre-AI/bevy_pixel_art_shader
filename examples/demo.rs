@@ -14,7 +14,10 @@ use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 use bevy_edge_detection_outline::{EdgeDetection, EdgeDetectionPlugin};
-use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
+use bevy_egui::{
+    EguiContext, EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass,
+    PrimaryEguiContext, egui,
+};
 use bevy_pixel_art_shader::{
     HoldoutExtension, HoldoutMaterial, PixelArtExtension, PixelArtMaterial, PixelArtShaderParams,
     PixelArtShaderPlugin, default_pixel_art_palette,
@@ -37,6 +40,12 @@ fn main() {
         .add_plugins(PixelArtShaderPlugin)
         .add_plugins(EdgeDetectionPlugin::default())
         .add_plugins(EguiPlugin::default())
+        // Prevent bevy_egui from auto-attaching to the first camera (the low-res one).
+        // We manually add PrimaryEguiContext to the window camera instead.
+        .insert_resource(EguiGlobalSettings {
+            auto_create_primary_context: false,
+            ..default()
+        })
         .add_systems(Startup, setup)
         .add_systems(Update, (rotate_models, swap_glb_materials))
         .add_systems(EguiPrimaryContextPass, debug_ui)
@@ -229,10 +238,13 @@ fn setup(
         Camera3d::default(),
         Camera {
             order: 0,
-            clear_color: Color::srgb(0.1, 0.1, 0.1).into(),
+            clear_color: Color::srgb(0.2, 0.05, 0.3).into(), // purple bg for debug visibility
             ..default()
         },
         camera_transform,
+        // Attach egui to the window camera (not the low-res render-to-texture one).
+        EguiContext::default(),
+        PrimaryEguiContext,
     ));
 
     // ================================================================
@@ -332,7 +344,9 @@ fn debug_ui(
     };
 
     egui::Window::new("Pixel Art Settings")
-        .default_width(320.0)
+        .default_width(280.0)
+        .default_pos([10.0, 10.0])
+        .collapsible(true)
         .show(ctx, |ui| {
             // ── Pipeline Stage Selector ──
             ui.heading("Pipeline Stage");
