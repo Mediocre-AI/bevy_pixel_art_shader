@@ -1,12 +1,9 @@
-//! Standalone demo: 3-camera pixel art pipeline with holdout occluders.
+//! Standalone demo: pixel art pipeline with holdout occluders + debug stage viewer.
 //!
 //! Architecture:
-//!   Full-res 3D Camera (layer 0) → window         (terrain, reference objects, UI overlay)
+//!   Full-res 3D Camera (layer 0) → window         (terrain, reference objects)
 //!   Low-res 3D Camera  (layer 1) → 320×180 texture (pixel art + holdout + EdgeDetection)
 //!   UI ImageNode                  → canvas overlay  (nearest upscale on top of full-res scene)
-//!
-//! Holdout ground on layer 1 writes depth but outputs transparent,
-//! so pixel art entities behind terrain are properly occluded.
 //!
 //! Run:  cargo run --example demo
 
@@ -23,11 +20,8 @@ use bevy_pixel_art_shader::{
     PixelArtShaderPlugin, default_pixel_art_palette,
 };
 
-/// Low-resolution canvas dimensions.
 const RES_WIDTH: u32 = 320;
 const RES_HEIGHT: u32 = 180;
-
-/// Layer 1: low-res pixel art entities + holdout occluders.
 const PIXEL_ART_LAYER: RenderLayers = RenderLayers::layer(1);
 
 fn main() {
@@ -49,15 +43,12 @@ fn main() {
         .run();
 }
 
-/// Tag for spinning models.
 #[derive(Component)]
 struct Spinning;
 
-/// Marker: GLB scene needs StandardMaterial → PixelArtMaterial swap.
 #[derive(Component)]
 struct NeedsMaterialSwap;
 
-/// Marker for the low-res pixel art camera.
 #[derive(Component)]
 struct PixelArtCamera;
 
@@ -72,7 +63,6 @@ fn setup(
 ) {
     let (palette, palette_count) = default_pixel_art_palette();
 
-    // ---- Low-res render target (320×180, nearest-neighbor, transparent) ----
     let mut canvas_image = Image::new_target_texture(
         RES_WIDTH,
         RES_HEIGHT,
@@ -82,7 +72,6 @@ fn setup(
     canvas_image.sampler = ImageSampler::nearest();
     let image_handle = images.add(canvas_image);
 
-    // --- Helper: create a PixelArtMaterial with a given tint ---
     let make_pixel_mat = |mats: &mut Assets<PixelArtMaterial>, color: Color| {
         let linear = color.to_linear();
         mats.add(ExtendedMaterial {
@@ -102,11 +91,12 @@ fn setup(
         })
     };
 
+    let sphere_mesh = meshes.add(Sphere::new(1.0).mesh().ico(5).unwrap());
+
     // ================================================================
-    //  Layer 0: full-res scene (terrain, reference objects)
+    //  Layer 0: full-res scene
     // ================================================================
 
-    // Ground plane (visible, full-res)
     let ground_mat = std_materials.add(StandardMaterial {
         base_color: Color::srgb(0.35, 0.35, 0.35),
         ..default()
@@ -119,43 +109,6 @@ fn setup(
         Transform::from_xyz(1.5, -0.01, -2.0),
     ));
 
-    // Reference objects (standard PBR, full-res)
-    let ref_sphere_mat = std_materials.add(StandardMaterial {
-        base_color: Color::srgb(0.9, 0.2, 0.2),
-        ..default()
-    });
-    commands.spawn((
-        Name::new("Ref Sphere"),
-        Mesh3d(meshes.add(Sphere::new(1.0).mesh().ico(5).unwrap())),
-        MeshMaterial3d(ref_sphere_mat),
-        Transform::from_xyz(0.0, 1.0, -4.0),
-        Spinning,
-    ));
-
-    let ref_cube_mat = std_materials.add(StandardMaterial {
-        base_color: Color::srgb(0.2, 0.8, 0.3),
-        ..default()
-    });
-    commands.spawn((
-        Name::new("Ref Cube"),
-        Mesh3d(meshes.add(Cuboid::new(1.5, 1.5, 1.5))),
-        MeshMaterial3d(ref_cube_mat),
-        Transform::from_xyz(3.0, 0.75, -4.0),
-        Spinning,
-    ));
-
-    let ref_torus_mat = std_materials.add(StandardMaterial {
-        base_color: Color::srgb(0.2, 0.4, 0.9),
-        ..default()
-    });
-    commands.spawn((
-        Name::new("Ref Torus"),
-        Mesh3d(meshes.add(Torus::new(0.4, 0.8))),
-        MeshMaterial3d(ref_torus_mat),
-        Transform::from_xyz(6.0, 1.0, -4.0),
-        Spinning,
-    ));
-
     // GLB reference (standard PBR, full-res)
     let glb_handle_ref: Handle<Scene> = asset_server.load("demo_model.glb#Scene0");
     commands.spawn((
@@ -166,10 +119,9 @@ fn setup(
     ));
 
     // ================================================================
-    //  Layer 1: low-res pixel art + holdout occluders
+    //  Layer 1: pixel art sphere cluster + holdout
     // ================================================================
 
-    // Holdout ground (invisible occluder — same mesh/position as real ground)
     let holdout_mat = holdout_materials.add(ExtendedMaterial {
         base: StandardMaterial::default(),
         extension: HoldoutExtension {},
@@ -182,23 +134,38 @@ fn setup(
         PIXEL_ART_LAYER,
     ));
 
-    // Pixel art primitives
-    let sphere_mat = make_pixel_mat(&mut pixel_materials, Color::srgb(0.9, 0.2, 0.2));
-    commands.spawn((
-        Name::new("Sphere"),
-        Mesh3d(meshes.add(Sphere::new(1.0).mesh().ico(5).unwrap())),
-        MeshMaterial3d(sphere_mat),
-        Transform::from_xyz(0.0, 1.0, 0.0),
-        Spinning,
-        PIXEL_ART_LAYER,
-    ));
+    // Overlapping sphere cluster — various colors and sizes
+    let cluster = [
+        // (position, radius_scale, color)
+        (Vec3::new(0.0, 1.2, 0.0), 1.2, Color::srgb(0.9, 0.15, 0.15)),  // red (center)
+        (Vec3::new(1.3, 0.9, 0.3), 0.9, Color::srgb(0.15, 0.7, 0.2)),   // green
+        (Vec3::new(-1.1, 1.0, 0.5), 1.0, Color::srgb(0.2, 0.3, 0.9)),   // blue
+        (Vec3::new(0.5, 1.8, -0.3), 0.7, Color::srgb(0.95, 0.8, 0.1)),  // yellow
+        (Vec3::new(-0.5, 0.6, 1.0), 0.6, Color::srgb(0.8, 0.3, 0.8)),   // purple
+        (Vec3::new(0.8, 0.5, -0.8), 0.5, Color::srgb(0.1, 0.8, 0.8)),   // cyan
+        (Vec3::new(-0.3, 2.2, 0.2), 0.55, Color::srgb(0.95, 0.5, 0.1)), // orange
+        (Vec3::new(1.5, 1.5, -0.5), 0.65, Color::srgb(0.9, 0.4, 0.6)),  // pink
+    ];
 
+    for (i, (pos, scale, color)) in cluster.iter().enumerate() {
+        let mat = make_pixel_mat(&mut pixel_materials, *color);
+        commands.spawn((
+            Name::new(format!("Sphere {i}")),
+            Mesh3d(sphere_mesh.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_translation(*pos).with_scale(Vec3::splat(*scale)),
+            Spinning,
+            PIXEL_ART_LAYER,
+        ));
+    }
+
+    // Cube and torus for shape variety
     let cube_mat = make_pixel_mat(&mut pixel_materials, Color::srgb(0.2, 0.8, 0.3));
     commands.spawn((
         Name::new("Cube"),
         Mesh3d(meshes.add(Cuboid::new(1.5, 1.5, 1.5))),
         MeshMaterial3d(cube_mat),
-        Transform::from_xyz(3.0, 0.75, 0.0),
+        Transform::from_xyz(3.5, 0.75, 0.0),
         Spinning,
         PIXEL_ART_LAYER,
     ));
@@ -208,12 +175,12 @@ fn setup(
         Name::new("Torus"),
         Mesh3d(meshes.add(Torus::new(0.4, 0.8))),
         MeshMaterial3d(torus_mat),
-        Transform::from_xyz(6.0, 1.0, 0.0),
+        Transform::from_xyz(5.5, 1.0, 0.0),
         Spinning,
         PIXEL_ART_LAYER,
     ));
 
-    // GLB model (pixel art — material swap happens async)
+    // GLB model (pixel art)
     let glb_handle: Handle<Scene> = asset_server.load("demo_model.glb#Scene0");
     commands.spawn((
         Name::new("GLB PixelArt"),
@@ -225,7 +192,7 @@ fn setup(
     ));
 
     // ================================================================
-    //  Light (visible to both layers)
+    //  Light (both layers)
     // ================================================================
     commands.spawn((
         DirectionalLight {
@@ -240,11 +207,9 @@ fn setup(
     // ================================================================
     //  Cameras
     // ================================================================
-
     let camera_transform =
         Transform::from_xyz(3.0, 5.0, 10.0).looking_at(Vec3::new(1.5, 1.0, -2.0), Vec3::Y);
 
-    // Low-res 3D camera → 320×180 texture (transparent clear for compositing)
     commands.spawn((
         Camera3d::default(),
         Camera {
@@ -260,7 +225,6 @@ fn setup(
         PixelArtCamera,
     ));
 
-    // Full-res 3D camera → window (layer 0, default)
     commands.spawn((
         Camera3d::default(),
         Camera {
@@ -272,7 +236,7 @@ fn setup(
     ));
 
     // ================================================================
-    //  UI overlay: canvas image on top of full-res scene
+    //  UI overlay
     // ================================================================
     commands.spawn((
         ImageNode::new(image_handle),
@@ -285,7 +249,6 @@ fn setup(
     ));
 }
 
-/// Slowly rotate all Spinning entities.
 fn rotate_models(time: Res<Time>, mut q: Query<&mut Transform, With<Spinning>>) {
     let angle = time.delta_secs() * 0.3;
     for mut t in q.iter_mut() {
@@ -293,7 +256,6 @@ fn rotate_models(time: Res<Time>, mut q: Query<&mut Transform, With<Spinning>>) 
     }
 }
 
-/// Swap GLB scene's StandardMaterial children to PixelArtMaterial + move to pixel art layer.
 fn swap_glb_materials(
     mut commands: Commands,
     query: Query<(Entity, &Children), With<NeedsMaterialSwap>>,
@@ -305,7 +267,6 @@ fn swap_glb_materials(
 
     for (entity, top_children) in query.iter() {
         let mut swapped_any = false;
-
         let mut stack: Vec<Entity> = top_children.iter().collect();
         while let Some(child) = stack.pop() {
             if mat_query.get(child).is_ok() {
@@ -343,14 +304,24 @@ fn swap_glb_materials(
                 stack.extend(grandchildren.iter());
             }
         }
-
         if swapped_any {
             commands.entity(entity).remove::<NeedsMaterialSwap>();
         }
     }
 }
 
-/// egui debug panel for live shader parameter tweaking.
+// ============================================================================
+//  Debug UI
+// ============================================================================
+
+const STAGE_LABELS: &[&str] = &[
+    "0: Full Pipeline",
+    "1: PBR Only",
+    "2: PBR + Toon",
+    "3: PBR + Toon + Palette",
+    "4: PBR + Toon + Palette + Dither",
+];
+
 fn debug_ui(
     mut contexts: EguiContexts,
     mut pixel_materials: ResMut<Assets<PixelArtMaterial>>,
@@ -359,19 +330,52 @@ fn debug_ui(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    egui::Window::new("Pixel Art Settings")
-        .default_width(300.0)
-        .show(ctx, |ui| {
-            // ── PixelArt Material params ──
-            ui.collapsing("Pixel Art Shader", |ui| {
-                // Collect handles first to avoid borrow conflict
-                let handles: Vec<_> = pixel_materials
-                    .iter()
-                    .map(|(id, _)| AssetId::from(id))
-                    .collect();
 
+    egui::Window::new("Pixel Art Settings")
+        .default_width(320.0)
+        .show(ctx, |ui| {
+            // ── Pipeline Stage Selector ──
+            ui.heading("Pipeline Stage");
+            ui.label("Select which stages are applied:");
+
+            let handles: Vec<_> = pixel_materials
+                .iter()
+                .map(|(id, _)| AssetId::from(id))
+                .collect();
+
+            let current_stage = handles
+                .first()
+                .and_then(|id| pixel_materials.get(*id))
+                .map(|m| m.extension.params.debug_stage)
+                .unwrap_or(0);
+
+            let mut selected = current_stage;
+            for (i, label) in STAGE_LABELS.iter().enumerate() {
+                ui.radio_value(&mut selected, i as u32, *label);
+            }
+
+            if selected != current_stage {
+                for id in &handles {
+                    if let Some(mat) = pixel_materials.get_mut(*id) {
+                        mat.extension.params.debug_stage = selected;
+                    }
+                }
+            }
+
+            // Edge detection toggle (stage 5 effectively)
+            if let Ok(mut ed) = edge_q.single_mut() {
+                let mut edges_on = ed.enable_depth || ed.enable_normal;
+                if ui.checkbox(&mut edges_on, "Edge Detection Outlines").changed() {
+                    ed.enable_depth = edges_on;
+                    ed.enable_normal = edges_on;
+                }
+            }
+
+            ui.separator();
+
+            // ── Parameter sliders ──
+            ui.collapsing("Pixel Art Params", |ui| {
                 if let Some(first_id) = handles.first() {
-                    // Read current values from first material
                     let params = pixel_materials
                         .get(*first_id)
                         .unwrap()
@@ -445,10 +449,8 @@ fn debug_ui(
                 }
             });
 
-            // ── EdgeDetection params ──
-            ui.collapsing("Edge Detection", |ui| {
+            ui.collapsing("Edge Detection Params", |ui| {
                 if let Ok(mut ed) = edge_q.single_mut() {
-                    ui.label("Thresholds");
                     ui.add(
                         egui::Slider::new(&mut ed.depth_threshold, 0.0..=5.0)
                             .text("Depth Threshold"),
@@ -458,13 +460,6 @@ fn debug_ui(
                             .text("Normal Threshold"),
                     );
                     ui.add(
-                        egui::Slider::new(&mut ed.color_threshold, 0.0..=1.0)
-                            .text("Color Threshold"),
-                    );
-
-                    ui.separator();
-                    ui.label("Thickness");
-                    ui.add(
                         egui::Slider::new(&mut ed.depth_thickness, 0.0..=5.0)
                             .text("Depth Thickness"),
                     );
@@ -473,22 +468,13 @@ fn debug_ui(
                             .text("Normal Thickness"),
                     );
                     ui.add(
-                        egui::Slider::new(&mut ed.color_thickness, 0.0..=5.0)
-                            .text("Color Thickness"),
-                    );
-
-                    ui.separator();
-                    ui.label("Steep Angle");
-                    ui.add(
                         egui::Slider::new(&mut ed.steep_angle_threshold, 0.0..=1.0)
-                            .text("Threshold"),
+                            .text("Steep Threshold"),
                     );
                     ui.add(
                         egui::Slider::new(&mut ed.steep_angle_multiplier, 0.0..=5.0)
-                            .text("Multiplier"),
+                            .text("Steep Multiplier"),
                     );
-
-                    ui.separator();
                     ui.add(
                         egui::Slider::new(&mut ed.block_pixel, 1..=4).text("Block Pixel"),
                     );
@@ -497,7 +483,6 @@ fn debug_ui(
                             .text("Flat Rejection"),
                     );
 
-                    ui.separator();
                     let mut color = [
                         ed.edge_color.to_srgba().red,
                         ed.edge_color.to_srgba().green,
@@ -507,11 +492,6 @@ fn debug_ui(
                         ed.edge_color = Color::srgb(color[0], color[1], color[2]);
                     }
                     ui.label("Edge Color");
-
-                    ui.separator();
-                    ui.checkbox(&mut ed.enable_depth, "Enable Depth Edges");
-                    ui.checkbox(&mut ed.enable_normal, "Enable Normal Edges");
-                    ui.checkbox(&mut ed.enable_color, "Enable Color Edges");
                 }
             });
         });

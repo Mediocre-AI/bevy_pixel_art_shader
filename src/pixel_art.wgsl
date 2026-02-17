@@ -4,6 +4,9 @@
 //!   1. Toon quantize the PBR lighting result (hard band edges)
 //!   2. CIELAB palette quantization
 //!   3. World-space Bayer dithering (only at band boundaries)
+//!
+//! debug_stage controls which stages are applied:
+//!   0 = full pipeline, 1 = PBR only, 2 = +toon, 3 = +palette, 4 = +dither
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
@@ -31,11 +34,11 @@ struct PixelArtParams {
     toon_bands: f32,
     toon_softness: f32,
     toon_shadow_floor: f32,
-    dither_density: f32,           // world-space dither pattern density (cells per world unit)
+    dither_density: f32,
     palette_count: u32,
     palette_strength: f32,
     dither_strength: f32,
-    _pad: f32,
+    debug_stage: u32,              // 0=full, 1=PBR, 2=+toon, 3=+palette, 4=+dither
     palette_colors: array<vec4<f32>, 32>,
 }
 
@@ -179,9 +182,16 @@ fn fragment(
 
     // --- 2. Bevy PBR lighting (all scene lights, shadows, IBL) ---
     out.color = apply_pbr_lighting(pbr_input);
+    var color = out.color.rgb;
+
+    // Stage 1: PBR only — stop here
+    if (pixel_art.debug_stage == 1u) {
+        out.color = vec4<f32>(color, out.color.a);
+        out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+        return out;
+    }
 
     // --- 3. Toon quantize the lit result (hard band edges) ---
-    var color = out.color.rgb;
     let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
     if (luminance > 0.001) {
         let toon_lum = toon_quantize(luminance, pixel_art.toon_bands, pixel_art.toon_softness);
@@ -190,23 +200,26 @@ fn fragment(
     } else {
         color = pixel_art.base_tint.rgb * pixel_art.toon_shadow_floor;
     }
-
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
 
-    // --- 4. CIELAB palette quantization + world-space Bayer dithering ---
+    // Stage 2: PBR + Toon — stop here
+    if (pixel_art.debug_stage == 2u) {
+        out.color = vec4<f32>(color, out.color.a);
+        out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+        return out;
+    }
+
+    // --- 4. CIELAB palette quantization ---
     if (pixel_art.palette_count > 0u) {
         let pm = find_palette_match(color);
         var quantized = pm.nearest_rgb;
 
-        if (pixel_art.dither_strength > 0.0) {
-            // Dithering only at band boundaries (where blend is significant)
-            // smoothstep gates: only dither when the two closest palette colors
-            // are similarly distant (pm.blend > 0.15), avoiding noise on flat areas
+        // Stage 3: +Palette (no dither) — skip dithering
+        if (pixel_art.debug_stage != 3u && pixel_art.dither_strength > 0.0) {
             let boundary_mask = smoothstep(0.1, 0.35, pm.blend);
             let effective_dither = boundary_mask * pixel_art.dither_strength;
 
             if (effective_dither > 0.0) {
-                // World-space dithering: pattern stays fixed on surfaces
                 let threshold = bayer4x4(floor(in.world_position.xz * pixel_art.dither_density));
                 if (pm.blend * effective_dither > threshold) {
                     quantized = pm.second_rgb;

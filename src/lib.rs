@@ -73,8 +73,8 @@ pub struct PixelArtShaderParams {
     pub palette_strength: f32,
     /// Bayer dither strength (0 = off, 1.0 = full, default: 0.3).
     pub dither_strength: f32,
-    /// Padding for 16-byte alignment.
-    pub _pad: f32,
+    /// Debug visualization stage (0=full, 1=PBR only, 2=+toon, 3=+palette, 4=+dither).
+    pub debug_stage: u32,
     /// Palette colors in linear RGB (max 32 entries, stored as Vec4 for alignment).
     pub palette_colors: [Vec4; 32],
 }
@@ -91,7 +91,7 @@ impl Default for PixelArtShaderParams {
             palette_count: count,
             palette_strength: 1.0,
             dither_strength: 0.3,   // subtle, boundary-only dithering
-            _pad: 0.0,
+            debug_stage: 0,
             palette_colors: palette,
         }
     }
