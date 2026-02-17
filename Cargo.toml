@@ -9,6 +9,7 @@ bevy_edge_detection_outline = { path = "../bevy_edge_detection_outline" }
 
 [dev-dependencies]
 bevy_egui = "0.39"
+bevy_panorbit_camera = "0.34"
 
 [[example]]
 name = "demo"

@@ -1,9 +1,11 @@
 //! Standalone demo: pixel art pipeline with holdout occluders + debug stage viewer.
 //!
 //! Architecture:
-//!   Full-res 3D Camera (layer 0) → window         (terrain, reference objects)
+//!   Full-res 3D Camera (layer 0) → window         (terrain, standard PBR comparison)
 //!   Low-res 3D Camera  (layer 1) → 320×180 texture (pixel art + holdout + EdgeDetection)
 //!   UI ImageNode                  → canvas overlay  (nearest upscale on top of full-res scene)
+//!
+//! Controls: left-drag = orbit, right-drag = pan, scroll = zoom
 //!
 //! Run:  cargo run --example demo
 
@@ -18,6 +20,7 @@ use bevy_egui::{
     EguiContext, EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass,
     PrimaryEguiContext, egui,
 };
+use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use bevy_pixel_art_shader::{
     HoldoutExtension, HoldoutMaterial, PixelArtExtension, PixelArtMaterial, PixelArtShaderParams,
     PixelArtShaderPlugin, default_pixel_art_palette,
@@ -39,15 +42,14 @@ fn main() {
         }))
         .add_plugins(PixelArtShaderPlugin)
         .add_plugins(EdgeDetectionPlugin::default())
+        .add_plugins(PanOrbitCameraPlugin)
         .add_plugins(EguiPlugin::default())
-        // Prevent bevy_egui from auto-attaching to the first camera (the low-res one).
-        // We manually add PrimaryEguiContext to the window camera instead.
         .insert_resource(EguiGlobalSettings {
             auto_create_primary_context: false,
             ..default()
         })
         .add_systems(Startup, setup)
-        .add_systems(Update, (rotate_models, swap_glb_materials))
+        .add_systems(Update, (rotate_models, swap_glb_materials, sync_pixel_art_camera))
         .add_systems(EguiPrimaryContextPass, debug_ui)
         .run();
 }
@@ -61,9 +63,11 @@ struct NeedsMaterialSwap;
 #[derive(Component)]
 struct PixelArtCamera;
 
+#[derive(Component)]
+struct WindowCamera;
+
 fn setup(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut pixel_materials: ResMut<Assets<PixelArtMaterial>>,
     mut holdout_materials: ResMut<Assets<HoldoutMaterial>>,
@@ -101,9 +105,11 @@ fn setup(
     };
 
     let sphere_mesh = meshes.add(Sphere::new(1.0).mesh().ico(5).unwrap());
+    let cube_mesh = meshes.add(Cuboid::new(1.5, 1.5, 1.5));
+    let torus_mesh = meshes.add(Torus::new(0.4, 0.8));
 
     // ================================================================
-    //  Layer 0: full-res scene
+    //  Layer 0: full-res standard PBR comparison objects
     // ================================================================
 
     let ground_mat = std_materials.add(StandardMaterial {
@@ -115,20 +121,31 @@ fn setup(
         Name::new("Ground"),
         Mesh3d(ground_mesh.clone()),
         MeshMaterial3d(ground_mat),
-        Transform::from_xyz(1.5, -0.01, -2.0),
     ));
 
-    // GLB reference (standard PBR, full-res)
-    let glb_handle_ref: Handle<Scene> = asset_server.load("demo_model.glb#Scene0");
-    commands.spawn((
-        Name::new("GLB Reference"),
-        SceneRoot(glb_handle_ref),
-        Transform::from_xyz(-3.0, 0.0, -4.0).with_scale(Vec3::splat(1.5)),
-        Spinning,
-    ));
+    // Standard PBR: sphere, cube, torus (z = -3, right side)
+    let std_shapes: [(Color, &str, Handle<Mesh>, Vec3); 3] = [
+        (Color::srgb(0.9, 0.15, 0.15), "Std Sphere", sphere_mesh.clone(), Vec3::new(4.0, 1.0, -3.0)),
+        (Color::srgb(0.2, 0.8, 0.3),  "Std Cube",   cube_mesh.clone(),   Vec3::new(7.0, 0.75, -3.0)),
+        (Color::srgb(0.2, 0.4, 0.9),  "Std Torus",  torus_mesh.clone(),  Vec3::new(10.0, 1.0, -3.0)),
+    ];
+    for (color, name, mesh, pos) in &std_shapes {
+        commands.spawn((
+            Name::new(*name),
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(std_materials.add(StandardMaterial {
+                base_color: *color,
+                perceptual_roughness: 1.0,
+                reflectance: 0.0,
+                ..default()
+            })),
+            Transform::from_translation(*pos),
+            Spinning,
+        ));
+    }
 
     // ================================================================
-    //  Layer 1: pixel art sphere cluster + holdout
+    //  Layer 1: pixel art objects + holdout
     // ================================================================
 
     let holdout_mat = holdout_materials.add(ExtendedMaterial {
@@ -139,66 +156,48 @@ fn setup(
         Name::new("Holdout Ground"),
         Mesh3d(ground_mesh),
         MeshMaterial3d(holdout_mat),
-        Transform::from_xyz(1.5, -0.01, -2.0),
         PIXEL_ART_LAYER,
     ));
 
-    // Overlapping sphere cluster — various colors and sizes
+    // Sphere cluster — far left
+    let cluster_offset = Vec3::new(-8.0, 0.0, 0.0);
     let cluster = [
-        // (position, radius_scale, color)
-        (Vec3::new(0.0, 1.2, 0.0), 1.2, Color::srgb(0.9, 0.15, 0.15)),  // red (center)
-        (Vec3::new(1.3, 0.9, 0.3), 0.9, Color::srgb(0.15, 0.7, 0.2)),   // green
-        (Vec3::new(-1.1, 1.0, 0.5), 1.0, Color::srgb(0.2, 0.3, 0.9)),   // blue
-        (Vec3::new(0.5, 1.8, -0.3), 0.7, Color::srgb(0.95, 0.8, 0.1)),  // yellow
-        (Vec3::new(-0.5, 0.6, 1.0), 0.6, Color::srgb(0.8, 0.3, 0.8)),   // purple
-        (Vec3::new(0.8, 0.5, -0.8), 0.5, Color::srgb(0.1, 0.8, 0.8)),   // cyan
-        (Vec3::new(-0.3, 2.2, 0.2), 0.55, Color::srgb(0.95, 0.5, 0.1)), // orange
-        (Vec3::new(1.5, 1.5, -0.5), 0.65, Color::srgb(0.9, 0.4, 0.6)),  // pink
+        (Vec3::new(0.0, 1.2, 0.0), 1.2, Color::srgb(0.9, 0.15, 0.15)),
+        (Vec3::new(1.3, 0.9, 0.3), 0.9, Color::srgb(0.15, 0.7, 0.2)),
+        (Vec3::new(-1.1, 1.0, 0.5), 1.0, Color::srgb(0.2, 0.3, 0.9)),
+        (Vec3::new(0.5, 1.8, -0.3), 0.7, Color::srgb(0.95, 0.8, 0.1)),
+        (Vec3::new(-0.5, 0.6, 1.0), 0.6, Color::srgb(0.8, 0.3, 0.8)),
+        (Vec3::new(0.8, 0.5, -0.8), 0.5, Color::srgb(0.1, 0.8, 0.8)),
+        (Vec3::new(-0.3, 2.2, 0.2), 0.55, Color::srgb(0.95, 0.5, 0.1)),
+        (Vec3::new(1.5, 1.5, -0.5), 0.65, Color::srgb(0.9, 0.4, 0.6)),
     ];
-
     for (i, (pos, scale, color)) in cluster.iter().enumerate() {
-        let mat = make_pixel_mat(&mut pixel_materials, *color);
         commands.spawn((
             Name::new(format!("Sphere {i}")),
             Mesh3d(sphere_mesh.clone()),
-            MeshMaterial3d(mat),
-            Transform::from_translation(*pos).with_scale(Vec3::splat(*scale)),
+            MeshMaterial3d(make_pixel_mat(&mut pixel_materials, *color)),
+            Transform::from_translation(*pos + cluster_offset).with_scale(Vec3::splat(*scale)),
             Spinning,
             PIXEL_ART_LAYER,
         ));
     }
 
-    // Cube and torus for shape variety
-    let cube_mat = make_pixel_mat(&mut pixel_materials, Color::srgb(0.2, 0.8, 0.3));
-    commands.spawn((
-        Name::new("Cube"),
-        Mesh3d(meshes.add(Cuboid::new(1.5, 1.5, 1.5))),
-        MeshMaterial3d(cube_mat),
-        Transform::from_xyz(3.5, 0.75, 0.0),
-        Spinning,
-        PIXEL_ART_LAYER,
-    ));
-
-    let torus_mat = make_pixel_mat(&mut pixel_materials, Color::srgb(0.2, 0.4, 0.9));
-    commands.spawn((
-        Name::new("Torus"),
-        Mesh3d(meshes.add(Torus::new(0.4, 0.8))),
-        MeshMaterial3d(torus_mat),
-        Transform::from_xyz(5.5, 1.0, 0.0),
-        Spinning,
-        PIXEL_ART_LAYER,
-    ));
-
-    // GLB model (pixel art)
-    let glb_handle: Handle<Scene> = asset_server.load("demo_model.glb#Scene0");
-    commands.spawn((
-        Name::new("GLB PixelArt"),
-        SceneRoot(glb_handle),
-        Transform::from_xyz(-3.0, 0.0, 0.0).with_scale(Vec3::splat(1.5)),
-        Spinning,
-        NeedsMaterialSwap,
-        PIXEL_ART_LAYER,
-    ));
+    // Pixel art: sphere, cube, torus (z = 0, same x as standard PBR)
+    let pa_shapes: [(Color, &str, Handle<Mesh>, Vec3); 3] = [
+        (Color::srgb(0.9, 0.15, 0.15), "PA Sphere", sphere_mesh.clone(), Vec3::new(4.0, 1.0, 0.0)),
+        (Color::srgb(0.2, 0.8, 0.3),  "PA Cube",   cube_mesh.clone(),   Vec3::new(7.0, 0.75, 0.0)),
+        (Color::srgb(0.2, 0.4, 0.9),  "PA Torus",  torus_mesh.clone(),  Vec3::new(10.0, 1.0, 0.0)),
+    ];
+    for (color, name, mesh, pos) in &pa_shapes {
+        commands.spawn((
+            Name::new(*name),
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(make_pixel_mat(&mut pixel_materials, *color)),
+            Transform::from_translation(*pos),
+            Spinning,
+            PIXEL_ART_LAYER,
+        ));
+    }
 
     // ================================================================
     //  Light (both layers)
@@ -216,9 +215,10 @@ fn setup(
     // ================================================================
     //  Cameras
     // ================================================================
-    let camera_transform =
-        Transform::from_xyz(3.0, 5.0, 10.0).looking_at(Vec3::new(1.5, 1.0, -2.0), Vec3::Y);
+    let cam_transform =
+        Transform::from_xyz(5.0, 6.0, 12.0).looking_at(Vec3::new(3.0, 0.5, -1.5), Vec3::Y);
 
+    // Low-res pixel art camera (render-to-texture)
     commands.spawn((
         Camera3d::default(),
         Camera {
@@ -228,27 +228,33 @@ fn setup(
         },
         RenderTarget::Image(image_handle.clone().into()),
         Msaa::Off,
-        camera_transform,
+        cam_transform,
         PIXEL_ART_LAYER,
         EdgeDetection::default(),
         PixelArtCamera,
     ));
 
+    // Full-res window camera (with orbit controls + egui)
     commands.spawn((
         Camera3d::default(),
         Camera {
             order: 0,
-            clear_color: Color::srgb(0.2, 0.05, 0.3).into(), // purple bg for debug visibility
+            clear_color: Color::srgb(0.15, 0.15, 0.18).into(),
             ..default()
         },
-        camera_transform,
-        // Attach egui to the window camera (not the low-res render-to-texture one).
+        cam_transform,
+        PanOrbitCamera {
+            focus: Vec3::new(3.0, 0.5, -1.5),
+            radius: Some(14.0),
+            ..default()
+        },
         EguiContext::default(),
         PrimaryEguiContext,
+        WindowCamera,
     ));
 
     // ================================================================
-    //  UI overlay
+    //  UI overlay (low-res texture on top)
     // ================================================================
     commands.spawn((
         ImageNode::new(image_handle),
@@ -259,6 +265,19 @@ fn setup(
             ..default()
         },
     ));
+}
+
+// Sync pixel art camera transform with the window camera's orbit state.
+fn sync_pixel_art_camera(
+    window_q: Query<&Transform, (With<WindowCamera>, Changed<Transform>)>,
+    mut pa_q: Query<&mut Transform, (With<PixelArtCamera>, Without<WindowCamera>)>,
+) {
+    let Ok(win_tf) = window_q.single() else {
+        return;
+    };
+    if let Ok(mut pa_tf) = pa_q.single_mut() {
+        *pa_tf = *win_tf;
+    }
 }
 
 fn rotate_models(time: Res<Time>, mut q: Query<&mut Transform, With<Spinning>>) {
@@ -348,9 +367,7 @@ fn debug_ui(
         .default_pos([10.0, 10.0])
         .collapsible(true)
         .show(ctx, |ui| {
-            // ── Pipeline Stage Selector ──
             ui.heading("Pipeline Stage");
-            ui.label("Select which stages are applied:");
 
             let handles: Vec<_> = pixel_materials
                 .iter()
@@ -367,7 +384,6 @@ fn debug_ui(
             for (i, label) in STAGE_LABELS.iter().enumerate() {
                 ui.radio_value(&mut selected, i as u32, *label);
             }
-
             if selected != current_stage {
                 for id in &handles {
                     if let Some(mat) = pixel_materials.get_mut(*id) {
@@ -376,7 +392,6 @@ fn debug_ui(
                 }
             }
 
-            // Edge detection toggle (stage 5 effectively)
             if let Ok(mut ed) = edge_q.single_mut() {
                 let mut edges_on = ed.enable_depth || ed.enable_normal;
                 if ui.checkbox(&mut edges_on, "Edge Detection Outlines").changed() {
@@ -387,7 +402,6 @@ fn debug_ui(
 
             ui.separator();
 
-            // ── Parameter sliders ──
             ui.collapsing("Pixel Art Params", |ui| {
                 if let Some(first_id) = handles.first() {
                     let params = pixel_materials
@@ -406,8 +420,6 @@ fn debug_ui(
                     let mut palette_count = params.palette_count;
 
                     let mut changed = false;
-
-                    ui.label("Toon Shading");
                     changed |= ui
                         .add(egui::Slider::new(&mut toon_bands, 1.0..=10.0).text("Bands"))
                         .changed();
@@ -420,9 +432,7 @@ fn debug_ui(
                                 .text("Shadow Floor"),
                         )
                         .changed();
-
                     ui.separator();
-                    ui.label("Palette & Dithering");
                     changed |= ui
                         .add(
                             egui::Slider::new(&mut palette_count, 0..=16).text("Palette Colors"),
