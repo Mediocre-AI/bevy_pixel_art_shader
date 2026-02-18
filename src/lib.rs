@@ -1,8 +1,12 @@
+pub mod compositor;
+
 use bevy::asset::embedded_asset;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
+
+pub use compositor::{LowResPixelArtCamera, PixelArtCompositor, PixelArtCompositorPlugin};
 
 // ============================================================================
 // Public types

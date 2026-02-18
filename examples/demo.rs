@@ -22,7 +22,8 @@ use bevy_egui::{
 };
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use bevy_pixel_art_shader::{
-    HoldoutExtension, HoldoutMaterial, PixelArtExtension, PixelArtMaterial, PixelArtShaderParams,
+    HoldoutExtension, HoldoutMaterial, LowResPixelArtCamera, PixelArtCompositor,
+    PixelArtCompositorPlugin, PixelArtExtension, PixelArtMaterial, PixelArtShaderParams,
     PixelArtShaderPlugin, default_pixel_art_palette,
 };
 
@@ -41,6 +42,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(PixelArtShaderPlugin)
+        .add_plugins(PixelArtCompositorPlugin)
         .add_plugins(EdgeDetectionPlugin::default())
         .add_plugins(PanOrbitCameraPlugin)
         .add_plugins(EguiPlugin::default())
@@ -232,9 +234,10 @@ fn setup(
         PIXEL_ART_LAYER,
         EdgeDetection::default(),
         PixelArtCamera,
+        LowResPixelArtCamera,
     ));
 
-    // Full-res window camera (with orbit controls + egui)
+    // Full-res window camera (with orbit controls + egui + depth-aware compositor)
     commands.spawn((
         Camera3d::default(),
         Camera {
@@ -243,6 +246,11 @@ fn setup(
             ..default()
         },
         cam_transform,
+        Msaa::Off,
+        PixelArtCompositor {
+            lowres_image: image_handle.clone(),
+            depth_bias: 0.01,
+        },
         PanOrbitCamera {
             focus: Vec3::new(3.0, 0.5, -1.5),
             radius: Some(14.0),
@@ -253,18 +261,6 @@ fn setup(
         WindowCamera,
     ));
 
-    // ================================================================
-    //  UI overlay (low-res texture on top)
-    // ================================================================
-    commands.spawn((
-        ImageNode::new(image_handle),
-        Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            position_type: PositionType::Absolute,
-            ..default()
-        },
-    ));
 }
 
 // Sync pixel art camera transform with the window camera's orbit state.
@@ -357,6 +353,7 @@ fn debug_ui(
     mut contexts: EguiContexts,
     mut pixel_materials: ResMut<Assets<PixelArtMaterial>>,
     mut edge_q: Query<&mut EdgeDetection, With<PixelArtCamera>>,
+    mut compositor_q: Query<&mut PixelArtCompositor, With<WindowCamera>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -398,6 +395,14 @@ fn debug_ui(
                     ed.enable_depth = edges_on;
                     ed.enable_normal = edges_on;
                 }
+            }
+
+            if let Ok(mut comp) = compositor_q.single_mut() {
+                ui.add(
+                    egui::Slider::new(&mut comp.depth_bias, 0.0..=0.1)
+                        .text("Depth Bias")
+                        .logarithmic(true),
+                );
             }
 
             ui.separator();
