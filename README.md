@@ -2,41 +2,45 @@
 
 ## Overview
 
-A material extension for Bevy that renders 3D models with a pixel art aesthetic. Integrates with Bevy's full PBR lighting pipeline, then post-processes through toon quantization, CIELAB palette matching, and screen-space Bayer dithering. Designed for a low-resolution render-to-texture pipeline with nearest-neighbor upscaling for crisp pixel art output.
+A material extension for Bevy that renders 3D models with a pixel art aesthetic. Integrates with Bevy's full PBR lighting pipeline, then post-processes through toon quantization, CIELAB palette matching, and screen-space Bayer dithering. Includes a depth-aware compositor that correctly resolves occlusion between the low-res pixel art layer and the full-res scene.
 
-![Example](example.png)
+![Demo](demo.gif)
 
 ## Version compatibility
 
 | Crate version | Bevy version |
 | --- | --- |
+| 0.2.x | 0.18.x |
 | 0.1.x | 0.18.x |
 
 ## Features
 
 - **Full PBR integration**: Builds on `StandardMaterial` via `MaterialExtension` — all scene lights, shadows, and IBL work out of the box.
+- **Depth-aware compositor**: Post-process render node compares reversed-Z depth from both cameras, displaying whichever layer is closer. Replaces the old UI ImageNode overlay.
 - **Toon quantization**: Configurable band count and softness for hard or smooth luminance banding.
 - **CIELAB palette matching**: Nearest-neighbor color quantization in perceptually uniform CIELAB space. Ships with a 64-color default palette (PICO-8 32 + DB32-inspired 32).
 - **Screen-space Bayer dithering**: 4x4 ordered dither aligned to screen pixels — no surface distortion when objects move.
 - **Holdout material**: Invisible occluder (`HoldoutMaterial`) that writes depth but outputs fully transparent color. Use on duplicated geometry in the low-res layer to occlude pixel art entities behind full-res scene geometry.
-- **Edge detection compatible**: Prepass writes `alpha=1.0` for pixel art and `alpha=0.0` for holdout, enabling selective outline rendering via [`bevy_edge_detection_outline`](../bevy_edge_detection_outline).
+- **Edge detection compatible**: Prepass writes `alpha=1.0` for pixel art and `alpha=0.0` for holdout, enabling selective outline rendering via [`bevy_edge_detection_outline`](https://crates.io/crates/bevy_edge_detection_outline).
 - **Debug stages**: Cycle through pipeline stages (PBR only → +Toon → +Palette → +Dither) to inspect each step.
 
 ## Architecture
 
 ```
-Low-res Camera3d (e.g. 320x180, RenderLayers 1)
+Low-res Camera3d (e.g. 320×180, RenderLayers 1)
   ├── PixelArtMaterial entities (3D models)
   ├── HoldoutMaterial entities (occluders)
   ├── EdgeDetection + DepthPrepass + NormalPrepass
-  └── Output: low-res texture with pixel art + outlines
+  ├── LowResPixelArtCamera marker
+  └── Output: color texture + depth prepass texture
 
 Full-res Camera3d (window resolution, RenderLayers 0)
   ├── Standard PBR entities (terrain, comparison objects)
-  └── Output: window framebuffer
-
-UI ImageNode overlay
-  └── Nearest-neighbor upscale of low-res texture on top
+  ├── PixelArtCompositor (post-process node)
+  │     ├── Reads: full-res color + full-res depth
+  │     ├── Reads: low-res color + low-res depth
+  │     └── Per-pixel reversed-Z depth comparison → closer layer wins
+  └── Output: composited result
 ```
 
 ## Usage
@@ -48,8 +52,9 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::image::ImageSampler;
 use bevy::render::render_resource::TextureFormat;
 use bevy_pixel_art_shader::{
-    PixelArtShaderPlugin, PixelArtMaterial, PixelArtExtension,
-    PixelArtShaderParams, HoldoutMaterial, HoldoutExtension,
+    PixelArtShaderPlugin, PixelArtCompositorPlugin, PixelArtMaterial,
+    PixelArtExtension, PixelArtShaderParams, PixelArtCompositor,
+    LowResPixelArtCamera, HoldoutMaterial, HoldoutExtension,
     default_pixel_art_palette,
 };
 use bevy_edge_detection_outline::{EdgeDetectionPlugin, EdgeDetection};
@@ -58,6 +63,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(PixelArtShaderPlugin)
+        .add_plugins(PixelArtCompositorPlugin)
         .add_plugins(EdgeDetectionPlugin::default())
         .add_systems(Startup, setup)
         .run();
@@ -111,23 +117,15 @@ fn setup(
         Transform::from_xyz(0.0, 3.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
         RenderLayers::layer(1),
         EdgeDetection::default(),
+        LowResPixelArtCamera,
     ));
 
-    // Full-res window camera
+    // Full-res window camera with depth-aware compositor
     commands.spawn((
         Camera3d::default(),
+        Msaa::Off,
+        PixelArtCompositor { lowres_image: image_handle, depth_bias: 0.01 },
         Transform::from_xyz(0.0, 3.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    // UI overlay: upscaled low-res texture
-    commands.spawn((
-        ImageNode::new(image_handle),
-        Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            position_type: PositionType::Absolute,
-            ..default()
-        },
     ));
 
     // Light
@@ -153,6 +151,12 @@ fn setup(
 | `dither_strength` | `0.3` | Bayer dither strength (0 = off, 1 = full) |
 | `debug_stage` | `0` | Pipeline stage to visualize (0=full, 1=PBR, 2=+Toon, 3=+Palette, 4=+Dither) |
 
+## Compositor Parameters
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `depth_bias` | `0.01` | Depth comparison tolerance, scaled proportionally by depth. Compensates for precision mismatch between low-res and full-res depth buffers. |
+
 ## Default Palette
 
 64 colors: PICO-8 base (16) + PICO-8 extended (16) + DB32-inspired extras (32 earth tones, skin, sky, foliage, metal shades). Use `default_pixel_art_palette()` or supply your own `[Vec4; 64]` array.
@@ -168,12 +172,11 @@ cargo run --example demo
 - **Left-drag**: orbit camera
 - **Right-drag**: pan camera
 - **Scroll**: zoom
-- **EGUI panel**: adjust all shader parameters, toggle edge detection, switch between Sobel/Roberts Cross operators
+- **EGUI panel**: adjust all shader parameters, toggle edge detection, switch between Sobel/Roberts Cross operators, tune depth bias
 
 ## Dependencies
 
 ```toml
 [dependencies]
-bevy = { version = "0.18", features = ["3d"] }
-bevy_edge_detection_outline = { path = "../bevy_edge_detection_outline" }
+bevy_pixel_art_shader = "0.2"
 ```
