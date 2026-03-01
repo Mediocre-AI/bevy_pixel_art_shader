@@ -232,7 +232,12 @@ fn setup(
         Msaa::Off,
         cam_transform,
         PIXEL_ART_LAYER,
-        EdgeDetection::default(),
+        EdgeDetection {
+            operator: EdgeOperator::PixelArt,
+            silhouette_color: Some(Color::srgba(0.0, 0.0, 0.0, 0.9)),
+            crease_color: Some(Color::srgba(0.0, 0.0, 0.0, 0.9)),
+            ..default()
+        },
         PixelArtCamera,
         LowResPixelArtCamera,
     ));
@@ -482,12 +487,32 @@ fn debug_ui(
                 if let Ok(mut ed) = edge_q.single_mut() {
                     ui.horizontal(|ui| {
                         ui.label("Operator:");
-                        let is_sobel = ed.operator == EdgeOperator::Sobel;
-                        if ui.selectable_label(is_sobel, "Sobel").clicked() {
+                        if ui
+                            .selectable_label(
+                                ed.operator == EdgeOperator::Sobel,
+                                "Sobel",
+                            )
+                            .clicked()
+                        {
                             ed.operator = EdgeOperator::Sobel;
                         }
-                        if ui.selectable_label(!is_sobel, "Roberts Cross").clicked() {
+                        if ui
+                            .selectable_label(
+                                ed.operator == EdgeOperator::RobertsCross,
+                                "Roberts",
+                            )
+                            .clicked()
+                        {
                             ed.operator = EdgeOperator::RobertsCross;
+                        }
+                        if ui
+                            .selectable_label(
+                                ed.operator == EdgeOperator::PixelArt,
+                                "PixelArt",
+                            )
+                            .clicked()
+                        {
+                            ed.operator = EdgeOperator::PixelArt;
                         }
                     });
                     ui.separator();
@@ -532,6 +557,39 @@ fn debug_ui(
                         ed.edge_color = Color::srgb(color[0], color[1], color[2]);
                     }
                     ui.label("Edge Color");
+
+                    ui.separator();
+                    let fallback = ed.edge_color;
+
+                    let mut use_sil = ed.silhouette_color.is_some();
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut use_sil, "");
+                        if use_sil {
+                            let sil = ed.silhouette_color.get_or_insert(fallback);
+                            let mut sc = [sil.to_srgba().red, sil.to_srgba().green, sil.to_srgba().blue];
+                            if ui.color_edit_button_rgb(&mut sc).changed() {
+                                *sil = Color::srgb(sc[0], sc[1], sc[2]);
+                            }
+                        } else {
+                            ed.silhouette_color = None;
+                        }
+                        ui.label("Silhouette Color");
+                    });
+
+                    let mut use_cre = ed.crease_color.is_some();
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut use_cre, "");
+                        if use_cre {
+                            let cre = ed.crease_color.get_or_insert(fallback);
+                            let mut cc = [cre.to_srgba().red, cre.to_srgba().green, cre.to_srgba().blue];
+                            if ui.color_edit_button_rgb(&mut cc).changed() {
+                                *cre = Color::srgb(cc[0], cc[1], cc[2]);
+                            }
+                        } else {
+                            ed.crease_color = None;
+                        }
+                        ui.label("Crease Color");
+                    });
                 }
             });
         });
