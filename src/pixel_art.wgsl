@@ -166,8 +166,8 @@ fn fragment(
     // --- 1. Build PBR input from base StandardMaterial ---
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
-    // Override base color with our tint
-    pbr_input.material.base_color = pixel_art.base_tint;
+    // Multiply texture-sampled base color with tint (preserves texture detail)
+    pbr_input.material.base_color *= pixel_art.base_tint;
 
     // Alpha discard
     pbr_input.material.base_color = alpha_discard(
@@ -198,7 +198,7 @@ fn fragment(
         let final_lum = mix(pixel_art.toon_shadow_floor, 1.0, toon_lum);
         color = color * (final_lum / luminance);
     } else {
-        color = pixel_art.base_tint.rgb * pixel_art.toon_shadow_floor;
+        color = vec3<f32>(0.0);
     }
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
 

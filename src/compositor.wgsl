@@ -24,8 +24,16 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // depth-buffer mismatch between lowres and fullres.
     let effective_bias = settings.depth_bias * fr_depth;
 
-    if lr_color.a > 0.01 && lr_depth >= fr_depth - effective_bias {
-        return lr_color;
+    // Only composite low-res pixel if it's substantially opaque AND closer to camera.
+    // Higher alpha threshold prevents edge bleed from nearest upscale.
+    // Particles (alpha-blended, no depth write) remain visible in fullres pass.
+    if lr_color.a > 0.1 && lr_depth >= fr_depth - effective_bias {
+        // Blend rather than replace: preserves fullres particles/effects behind pixel art models
+        let blend = lr_color.a;
+        return vec4<f32>(
+            mix(fr_color.rgb, lr_color.rgb, blend),
+            max(fr_color.a, lr_color.a),
+        );
     }
     return fr_color;
 }
